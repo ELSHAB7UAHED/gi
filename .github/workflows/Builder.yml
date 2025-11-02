@@ -1,37 +1,28 @@
-name: Build BARA Firmware
+name: Bara WiFi Hacker Tool
+version: 1.0.0
+description: Advanced WiFi scanning and deauthentication tool
+author: Ahmed Nour Ahmed
+license: MIT
 
-on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+dependencies:
+  arduino-esp32: ^2.0.0
+  AsyncTCP: ^1.1.1
+  ESPAsyncWebServer: ^2.0.0
 
-jobs:
-  build-esp32:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+platformio:
+  env:
+    - name: esp32dev
+      platform: espressif32
+      board: esp32dev
+      framework: arduino
+      build_flags:
+        - "-D ARDUINO_ESP32_DEV"
+        - "-D ARDUINO_RUNNING_CORE=1"
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-
-      - name: Install Arduino CLI
-        run: |
-          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
-          arduino-cli core update-index
-          arduino-cli core install esp32:esp32
-
-      - name: Compile Sketch
-        run: |
-          arduino-cli compile --fqbn esp32:esp32:esp32wrover gi.ino
-
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: bara-firmware
-          path: |
-            *.ino.bin
-            *.ino.partitions.bin
+targets:
+  upload:
+    command: platformio run --target upload
+  clean:
+    command: platformio run --target clean
+  build:
+    command: platformio run --target build
