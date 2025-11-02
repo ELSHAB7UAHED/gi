@@ -1,178 +1,42 @@
-name: ESP32 Firmware Builder
+name: Bara Wi-Fi Toolkit
+version: 1.0.0
+description: Advanced Wi-Fi scanning and deauth tool for ESP32
+author: Ahmed Nour Ahmed
+license: MIT
 
-on:
-  push:
-    branches: [ main, dev ]
-  pull_request:
-    branches: [ main, dev ]
-  schedule:
-    - cron: '0 0 * * *'  # Daily builds at midnight UTC
+dependencies:
+  platformio/toolchain-xtensa: ^2.0.0
+  platformio/framework-arduinoespressif32: ^3.0.0
 
-permissions:
-  contents: read
-  packages: write
-  id-token: write
+build:
+  flags:
+    -Os
+    -w
+    -std=gnu++11
+    -DARDUINO_ESP32_DEV
+    
+  board: esp32dev
+  framework: arduino
+  
+  extra_scripts:
+    - pre: scripts/pre_build.py
+    - post: scripts/post_build.py
 
-env:
-  PLATFORMIO_CORE_VERSION: 6.1.9
-  PLATFORMIO_HOME_DIR: ${{ github.workspace }}/.platformio
-  UPLOAD_PORT: /dev/ttyUSB0  # Default upload port, override in workflow
+upload:
+  port: /dev/ttyUSB0
+  speed: 921600
+  method: esptool
 
-jobs:
-  build-and-test:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        board: [esp32dev]
-        framework: [arduino, espidf]
-        include:
-          - board: esp32dev
-            framework: arduino
-          - board: esp32dev
-            framework: espidf
+monitor:
+  port: /dev/ttyUSB0
+  baud: 115200
 
-    steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v4
-      with:
-        submodules: recursive
-        fetch-depth: 0
-
-    - name: Setup Python Environment
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
-
-    - name: Install PlatformIO Core
-      run: |
-        python -m pip install --upgrade pip
-        pip install platformio==${{ env.PLATFORMIO_CORE_VERSION }}
-
-    - name: Cache PlatformIO Packages
-      uses: actions/cache@v3
-      with:
-        path: ${{ env.PLATFORMIO_HOME_DIR }}/packages
-        key: pio-packages-${{ hashFiles('platformio.ini') }}
-        restore-keys: pio-packages-
-
-    - name: Cache PlatformIO Dependencies
-      uses: actions/cache@v3
-      with:
-        path: ${{ env.PLATFORMIO_HOME_DIR }}/libdeps
-        key: pio-libdeps-${{ hashFiles('src/**/*', 'include/**/*') }}
-        restore-keys: pio-libdeps-
-
-    - name: Install Board Support Packages
-      run: |
-        pio pkg install --global --save "framework-${{ matrix.framework }}"
-        pio pkg update --global
-
-    - name: Validate Project Configuration
-      run: |
-        pio project config --check
-
-    - name: Build Firmware
-      run: |
-        pio run \
-          --environment ${{ matrix.board }} \
-          --framework ${{ matrix.framework }} \
-          --target build
-
-    - name: Run Unit Tests
-      run: |
-        pio test \
-          --environment ${{ matrix.board }} \
-          --framework ${{ matrix.framework }}
-
-    - name: Generate Documentation
-      if: success()
-      run: |
-        pio doc \
-          --environment ${{ matrix.board }} \
-          --framework ${{ matrix.framework }}
-
-    - name: Archive Artifacts
-      uses: actions/upload-artifact@v3
-      with:
-        name: firmware-${{ matrix.board }}-${{ matrix.framework }}
-        path: |
-          .pio/build/${{ matrix.board }}/
-          docs/
-
-    - name: Upload Binaries to Releases
-      if: startsWith(github.ref, 'refs/tags/')
-      uses: softprops/action-gh-release@v1
-      with:
-        files: |
-          .pio/build/${{ matrix.board }}/*.bin
-          .pio/build/${{ matrix.board }}/*.hex
-        tag_name: ${{ github.ref_name }}
-        generate_release_notes: true
-
-  deploy-to-device:
-    needs: build-and-test
-    runs-on: ubuntu-latest
-    environment:
-      name: production
-      url: https://example.com/device-status
-
-    steps:
-    - name: Download Latest Artifact
-      uses: actions/download-artifact@v3
-      with:
-        name: firmware-esp32dev-arduino
-
-    - name: Flash Firmware to Device
-      run: |
-        pio run \
-          --environment esp32dev \
-          --target upload
-
-    - name: Verify Deployment
-      run: |
-        echo "Device flashed successfully!"
-        echo "::set-output name=status::success"
-
-  security-scan:
-    needs: build-and-test
-    runs-on: ubuntu-latest
-    steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v4
-
-    - name: Run Security Scan
-      uses: owasp-dependency-check/action@v3
-      with:
-        format: 'ALL'
-        directory: '.'
-        output_file: 'dependency-check-report.html'
-
-    - name: Upload Security Report
-      uses: actions/upload-artifact@v3
-      with:
-        name: security-report
-        path: dependency-check-report.html
-
-  notify-slack:
-    needs: [build-and-test, deploy-to-device]
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-    - name: Send Notification
-      uses: 8398a7/action-slack@v3
-      with:
-        status: ${{ job.status }}
-        fields: repo,commit,author,took,message
-      env:
-        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-
-  cleanup:
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-    - name: Cleanup Workspace
-      run: |
-        rm -rf .pio/*
-        rm -rf .cache/*
-        rm -rf __pycache__/
-        docker system prune -af --volumes
+environment:
+  - name: esp32
+    platform: espressif32
+    framework: arduino
+    board: esp32dev
+    lib_deps:
+      - AsyncTCP@^1.1.0
+      - ESPAsyncWebServer@^2.0.0
+      - DNSServer@^1.1.0
