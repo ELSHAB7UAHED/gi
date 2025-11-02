@@ -1,42 +1,97 @@
-name: Bara Wi-Fi Toolkit
-version: 1.0.0
-description: Advanced Wi-Fi scanning and deauth tool for ESP32
-author: Ahmed Nour Ahmed
-license: MIT
+name: 🔧 ESP32 Firmware Builder (Async Edition)
 
-dependencies:
-  platformio/toolchain-xtensa: ^2.0.0
-  platformio/framework-arduinoespressif32: ^3.0.0
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
 
-build:
-  flags:
-    -Os
-    -w
-    -std=gnu++11
-    -DARDUINO_ESP32_DEV
-    
-  board: esp32dev
-  framework: arduino
-  
-  extra_scripts:
-    - pre: scripts/pre_build.py
-    - post: scripts/post_build.py
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🧱 Checkout repository
+        uses: actions/checkout@v4
 
-upload:
-  port: /dev/ttyUSB0
-  speed: 921600
-  method: esptool
+      - name: ⚙️ Install Arduino CLI
+        run: |
+          wget -q https://downloads.arduino.cc/arduino-cli/arduino-cli_latest_Linux_64bit.tar.gz
+          tar -xzf arduino-cli_latest_Linux_64bit.tar.gz
+          sudo mv arduino-cli /usr/local/bin/
+          arduino-cli version
 
-monitor:
-  port: /dev/ttyUSB0
-  baud: 115200
+      - name: 🧩 Configure Arduino CLI
+        run: |
+          arduino-cli config init --overwrite
+          arduino-cli config set board_manager.additional_urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32
 
-environment:
-  - name: esp32
-    platform: espressif32
-    framework: arduino
-    board: esp32dev
-    lib_deps:
-      - AsyncTCP@^1.1.0
-      - ESPAsyncWebServer@^2.0.0
-      - DNSServer@^1.1.0
+      - name: 📦 Install required libraries
+        run: |
+          arduino-cli lib install "AsyncTCP" || true
+          arduino-cli lib install "ESP Async WebServer" || true
+          arduino-cli lib install "ArduinoJson" || true
+
+      - name: 🏗️ Compile ESP32 firmware
+        run: |
+          mkdir -p build
+          arduino-cli compile --fqbn esp32:esp32:esp32 --output-dir build ./
+          echo "✅ Compilation successful!"
+
+      - name: 📜 List build output
+        run: ls -lh build || true
+
+      - name: 🧩 Merge firmware files into single BIN
+        run: |
+          # دمج ملفات الفلاش في ملف واحد جاهز للفلاش الكامل
+          python3 - <<'EOF'
+import os
+import sys
+import subprocess
+
+# تحديد أسماء الملفات داخل مجلد build
+base = "build"
+bootloader = None
+app = None
+partitions = None
+boot_app0 = None
+
+for f in os.listdir(base):
+    if "bootloader" in f and f.endswith(".bin"):
+        bootloader = os.path.join(base, f)
+    elif f.endswith(".bin") and "bootloader" not in f and "partitions" not in f and "boot_app0" not in f:
+        app = os.path.join(base, f)
+    elif "partitions" in f and f.endswith(".bin"):
+        partitions = os.path.join(base, f)
+    elif "boot_app0" in f and f.endswith(".bin"):
+        boot_app0 = os.path.join(base, f)
+
+if not all([bootloader, app, partitions, boot_app0]):
+    print("❌ Missing required BIN files!")
+    sys.exit(1)
+
+cmd = [
+    "esptool.py", "merge_bin",
+    "--flash_mode", "dio",
+    "--flash_freq", "40m",
+    "--flash_size", "4MB",
+    "0x1000", bootloader,
+    "0x8000", partitions,
+    "0xe000", boot_app0,
+    "0x10000", app,
+    os.path.join(base, "firmware_merged.bin")
+]
+subprocess.run(cmd, check=True)
+print("✅ Created merged binary: firmware_merged.bin")
+EOF
+
+      - name: 📦 Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: esp32-firmware
+          path: build
+
+      - name: ✅ Summary
+        run: |
+          echo "🎉 Build finished successfully!"
+          echo "📁 Download artifacts from the Actions tab."
