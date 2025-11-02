@@ -1,28 +1,36 @@
-name: Bara WiFi Hacker Tool
-version: 1.0.0
-description: Advanced WiFi scanning and deauthentication tool
-author: Ahmed Nour Ahmed
-license: MIT
+name: Build ESP32 Firmware
 
-dependencies:
-  arduino-esp32: ^2.0.0
-  AsyncTCP: ^1.1.1
-  ESPAsyncWebServer: ^2.0.0
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
 
-platformio:
-  env:
-    - name: esp32dev
-      platform: espressif32
-      board: esp32dev
-      framework: arduino
-      build_flags:
-        - "-D ARDUINO_ESP32_DEV"
-        - "-D ARDUINO_RUNNING_CORE=1"
-
-targets:
-  upload:
-    command: platformio run --target upload
-  clean:
-    command: platformio run --target clean
+jobs:
   build:
-    command: platformio run --target build
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v3
+      
+    - name: Install PlatformIO Core
+      uses: platformio/platformio-core-installer-action@v2.0.0
+      
+    - name: Setup Python Environment
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.x'
+        
+    - name: Install Dependencies
+      run: |
+        pip install esptool
+        sudo apt-get update
+        sudo apt-get install -y dfu-util
+        
+    - name: Build Firmware
+      uses: platformio/platformio-action-ci@v3.1.0
+      with:
+        project_path: .
+        targets: upload
+        environment: env:COMPILE_LTO=true
