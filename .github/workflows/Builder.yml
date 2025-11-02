@@ -1,36 +1,27 @@
-name: Build ESP32 Firmware
+# builder.yml — PlatformIO configuration for bara.ino
+# Compatible with GitHub Actions for automated .bin builds
 
-on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+platform: espressif32
+board: esp32dev
+framework: arduino
 
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    
-    steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v3
-      
-    - name: Install PlatformIO Core
-      uses: platformio/platformio-core-installer-action@v2.0.0
-      
-    - name: Setup Python Environment
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.x'
-        
-    - name: Install Dependencies
-      run: |
-        pip install esptool
-        sudo apt-get update
-        sudo apt-get install -y dfu-util
-        
-    - name: Build Firmware
-      uses: platformio/platformio-action-ci@v3.1.0
-      with:
-        project_path: .
-        targets: upload
-        environment: env:COMPILE_LTO=true
+monitor_speed: 115200
+
+lib_deps:
+  - WiFi
+  - WebServer
+  - ESPmDNS
+
+build_flags:
+  - -DCORE_DEBUG_LEVEL=0
+  - -Os
+  - -flto
+
+upload_speed: 921600
+upload_port: /dev/ttyUSB0  # Override in CI
+
+# For GitHub Actions: output directory
+build_dir: .pio/build/esp32dev
+
+# Partition scheme (default 4MB with OTA)
+board_build.partitions: default.csv
